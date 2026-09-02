@@ -122,3 +122,8 @@ The beginning directory structure with Illumina MiSeq data should be:
 
 
 ![Figure_Pipeline_MTX_Illumina](https://github.com/user-attachments/assets/a9cfb21f-30a6-465c-9700-434c70832c88)
+
+
+## Author ##
+
+Nicolas Nesi — UMR 1311 Inserm DYNAMICURE, Université de Caen Normandie
