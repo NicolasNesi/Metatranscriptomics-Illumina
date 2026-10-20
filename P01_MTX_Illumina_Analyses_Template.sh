@@ -1177,9 +1177,9 @@ create_directory "${FOLDER}/Microbiome_R/${RUN}/Combined"
 # Cleaning Working Directory
 # ---------------------------------
 ls * > "${FOLDER}/Scripts/List_files_remaining_in_LocalWorkingDir_for_${SAMPLE}_run${RUNDATE}.txt"
-rm -R "${LOCAL_WORK_DIR}"/*
+rm -rf "${LOCAL_WORK_DIR:?}"/*
 # ---------------------------------
 
 # ---------------------------------
-mv "${FOLDER}"/Scripts/MTX_Illumina."${SLURM_ARRAY_TASK_ID}".*.err "${FOLDER}/Scripts/Sbatch_log"
+mv "${FOLDER}"/Scripts/MTX_Illumina."${SLURM_ARRAY_TASK_ID}".${SLURM_ARRAY_JOB_ID}."* "${FOLDER}/Scripts/Sbatch_log" 2>/dev/null || true
 # ---------------------------------
