@@ -143,7 +143,7 @@ With `-pi all`, P02 is submitted with a SLURM `afterany` dependency: it starts w
 
 ## Pipeline workflow
 
-![Figure_Pipeline_MTX_Illumina](https://github.com/user-attachments/assets/a9cfb21f-30a6-465c-9700-434c70832c88)
+![Figure_Pipeline_MTX_Illumina](docs/Figure_Pipeline_MTX_Illumina.png)
 
 ### P01: per-sample analyses (one SLURM array task per sample)
 1. Read cleaning with fastp (quality, adapters), then FastQC and seqkit statistics.
