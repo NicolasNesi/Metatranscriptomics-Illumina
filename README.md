@@ -9,7 +9,7 @@ Pipeline for Metatranscriptomics (MTX) analyses from Illumina sequencing data (e
 | `P02_MTX_Illumina_Outputs-forR_Template.sh` | v1.11 | Merge of all samples, tables and reports for R |
 
 **TO ADD**
-- Sourmash (taxonomic profile)
+- Tanonomic profile similar to Rajagopala et al. 2021: Kraken -> extract reads per Genus -> denovo assemblies -> BLAST contigs vs nt -> record best hit and 97% match to genome -> keep species with at least 10 contigs or total 10,000 nt.
 - Alternative to HUMAnN3 for microbial functional analyses
 
 ## Contents
