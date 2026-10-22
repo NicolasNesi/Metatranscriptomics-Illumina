@@ -5,18 +5,25 @@
 #SBATCH --partition=long                          # Partition
 #SBATCH --nodes=1                                 # Number of node - 1 GENOA node has 96-core and 750 Go RAM
 #SBATCH --ntasks=1                                # Number of cores/cpus
-#SBATCH --cpus-per-task=96                        # Number of cpu per task
+#SBATCH --cpus-per-task=48                        # Number of cpu per task
 #SBATCH --time=04-00:00                           # Runtime in DD-HH:MM
 #SBATCH --mem=500G                                # Memory for all cores in Gbytes (or --mem 752000 in Mbytes)
 #SBATCH --mail-type=ALL                           # BEGIN,END,FAIL,ALL
 #SBATCH --mail-user=mymail       # Email address
 
 # ---------------------------------
-# Version v2.8
+# Version v2.9
 # ---------------------------------
 # author: Nicolas Nesi, Amelie Blanchetiere
 # University Caen Normandy, INSERM UMR 1311 DYNAMICURE
-# Date: 13/04/2026
+# Date: 21/10/2026
+# ---------------------------------
+# Changes v2.9: 
+# remove dedup filtering fastp
+# Bracken 16S uses the 16S database, Salmon redirection (2>&1) fixed,
+# LOCAL_WORK_DIR/SAMPLE guards, tolerant file moves (no abort before cleanup),
+# HUMAnN/Bracken skipped when no bacterial profile, MetaPhlAn --index added,
+# BLAST top-hit selection fixed, portable fastqc renaming, flagstat on all reads
 # ---------------------------------
 
 # ---------------------------------
@@ -74,6 +81,11 @@ echo "Job started with SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID}"
 # Threads
 export THREADS="${SLURM_CPUS_PER_TASK}"
 echo "number of threads used ${THREADS}"
+
+# Safety guards (the final cleanup does rm -R on LOCAL_WORK_DIR)
+: "${LOCAL_WORK_DIR:?LOCAL_WORK_DIR is not set - refusing to continue}"
+[[ -d "${LOCAL_WORK_DIR}" ]] || { echo "LOCAL_WORK_DIR=${LOCAL_WORK_DIR} is not a directory"; exit 1; }
+[[ -n "${SAMPLE}" ]] || { echo "No sample found at line ${SLURM_ARRAY_TASK_ID} of List_samples_${RUN}.txt"; exit 1; }
 # ---------------------------------
 
 # ---------------------------------
@@ -102,7 +114,7 @@ Host genome for cleaning and mapping: $HOST
 Kraken2 database used for metatranscriptomic taxonomic profiling: $DBKMTX
 Kraken2 database used for rRNA taxonomic profiling: $DBK16S
 Kraken2 analyses run with a confidence score of: $CONFIDENCE
-Kraken2 analyses run with a number of minimum hit groups of: $THRESHOLDBRACKEN
+Kraken2 analyses run with a number of minimum hit groups of: $THRESHOLDKRACKEN
 Bracken analyses run with a number of reads required PRIOR to abundance estimation of: $THRESHOLDBRACKEN
 Bracken reads length used : $READLENGTHBRACKEN
 Is taxonomic profile run with Blastn? $BLASTN - if yes with the database: $BLASTDATABASE and an evalue threshold of: $EVALUE
@@ -140,7 +152,7 @@ set -u
 # Kraken2=2.1.3
 # KrakenTools=1.2
 # Krona=2.8.1
-# MetaPhlAn=4.1.1
+# MetaPhlAn=4.1.2
 # mOTUs=3.1.0
 # NGmerge=0.5
 # Salmon=1.10.3
@@ -174,7 +186,6 @@ fastp \
 --length_required 15 \
 --qualified_quality_phred "${QSCORE}" \
 --low_complexity_filter \
---dedup \
 --thread 24 \
 --json "${SAMPLE}"_ReportFastp.json \
 --html "${SAMPLE}"_ReportFastp.html \
@@ -215,10 +226,10 @@ mv "${SAMPLE}_CleanedReads_${HOST}_PairedReads.2.fastq" "${SAMPLE}_CleanedReads_
 # ---------------------------------
 echo "Statistics of mapping to $HOST for sample: ${SAMPLE}"
 
+samtools flagstat --threads "${THREADS}" --output-fmt tsv "${SAMPLE}_mapping_${HOST}.sam" > "${SAMPLE}_MappedReads_to_${HOST}.tsv"
 samtools view --threads "${THREADS}" -b -F 4 "${SAMPLE}_mapping_${HOST}.sam" -o "${SAMPLE}_mapping_${HOST}_aligned.bam"
 samtools sort --threads "${THREADS}" "${SAMPLE}_mapping_${HOST}_aligned.bam" -o "${SAMPLE}_mapping_${HOST}_aligned_sorted.bam"
 samtools index "${SAMPLE}_mapping_${HOST}_aligned_sorted.bam"
-samtools flagstat --output-fmt tsv "${SAMPLE}_mapping_${HOST}_aligned_sorted.bam" > "${SAMPLE}_MappedReads_to_${HOST}.tsv"
 rm "${SAMPLE}_mapping_${HOST}.sam"
 # ---------------------------------
 
@@ -283,7 +294,7 @@ if [[ "$SALMON" == "yes" ]]; then
     --gcBias \
     --recoverOrphans \
     --numBootstraps 1000 \
-    --output ./"${SAMPLE}"_Salmon_Quant_RNA 2&>1 | tee -a "${SAMPLE}_salmon-quant_run${RUNDATE}.log"
+    --output ./"${SAMPLE}"_Salmon_Quant_RNA 2>&1 | tee -a "${SAMPLE}_salmon-quant_run${RUNDATE}.log"
     
     # rename output file with TPM per transcripts
     mv ./"${SAMPLE}"_Salmon_Quant_RNA/quant.sf ./"${SAMPLE}"_Salmon_Quant_RNA/"${SAMPLE}"_quant_ENST.tsv
@@ -313,7 +324,7 @@ fastqc \
 --svg \
 --threads "${THREADS}" 2>&1 | tee -a "${SAMPLE}_fastqc_Raw_run${RUNDATE}.log"
 
-rename "_fastqc" "_Fastqc_Raw" Fastqc_Raw/*
+for f in Fastqc_Raw/*; do mv "$f" "${f//_fastqc/_Fastqc_Raw}"; done
 
 # Cleaned data
 fastqc \
@@ -324,7 +335,7 @@ fastqc \
 --svg \
 --threads "${THREADS}" 2>&1 | tee -a "${SAMPLE}_fastqc_Cleaned_With-${HOST}_run${RUNDATE}.log"
 
-rename "_fastqc" "_Fastqc_Cleaned" Fastqc_Cleaned_With-"${HOST}"/*
+for f in Fastqc_Cleaned_With-"${HOST}"/*; do mv "$f" "${f//_fastqc/_Fastqc_Cleaned}"; done
 
 fastqc \
 "${SAMPLE}_CleanedReads_Without-${HOST}_PairedReads_R1.fastq" \
@@ -334,7 +345,7 @@ fastqc \
 --svg \
 --threads "${THREADS}" 2>&1 | tee -a "${SAMPLE}_fastqc_Cleaned_Without-${HOST}_run${RUNDATE}.log"
 
-rename "_fastqc" "_Fastqc_Cleaned" Fastqc_Cleaned_Without-"${HOST}"/*
+for f in Fastqc_Cleaned_Without-"${HOST}"/*; do mv "$f" "${f//_fastqc/_Fastqc_Cleaned}"; done
 # ---------------------------------
 
 # ---------------------------------
@@ -541,7 +552,7 @@ if [[ "$KRAKEN" == "yes" ]]; then
   
   # Microbial 16S rRNA Species level
   bracken \
-  -d "${PATHDBKMTX}" \
+  -d "${PATHDBK16S}" \
   -i "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDKRACKEN}.k2report" \
   -o "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDBRACKEN}_Species_Bracken.tsv" \
   -w "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDBRACKEN}_Species.breport" \
@@ -559,7 +570,7 @@ if [[ "$KRAKEN" == "yes" ]]; then
   
   # Microbial 16S rRNA Genus level
   bracken \
-  -d "${PATHDBKMTX}" \
+  -d "${PATHDBK16S}" \
   -i "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDKRACKEN}.k2report" \
   -o "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDBRACKEN}_Genus_Bracken.tsv" \
   -w "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDBRACKEN}_Genus.breport" \
@@ -715,6 +726,7 @@ metaphlan \
 "${SAMPLE}_CleanedReads_With-${HOST}_MergedPE.fastq" \
 --input_type fastq \
 --bowtie2db "/dlocal/home/2019013/Databases/MetaPhlAn_mpa_vJun23" \
+--index mpa_vJun23_CHOCOPhlAnSGB_202403 \
 --min_mapq_val 5 \
 --unclassified_estimation \
 --tax_lev 'a' \
@@ -750,17 +762,20 @@ if [[ "$BLASTN" == "yes" ]]; then
    -db "${BLASTDATABASE}" \
    -num_threads "${THREADS}" \
    -evalue "${EVALUE}" \
-   -num_alignments 5 \
+   -max_target_seqs 5 \
    -outfmt '6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore staxids sscinames sskingdoms' \
    -out "${SAMPLE}_vs_${BLASTDATABASE}_blastn.tsv" 2>&1 | tee -a "${SAMPLE}_vs_${BLASTDATABASE}_blastn_run${RUNDATE}.log"
 
 # Get top bitscore per query
-   cat "${SAMPLE}_vs_${BLASTDATABASE}_blastn.tsv" | sort -u -k1,1 --merge > "${SAMPLE}_vs_${BLASTDATABASE}_blastn_filter_topBitscore.tsv" 
+   sort -t $'\t' -k1,1 -k12,12gr "${SAMPLE}_vs_${BLASTDATABASE}_blastn.tsv" | awk -F'\t' '!seen[$1]++' > "${SAMPLE}_vs_${BLASTDATABASE}_blastn_filter_topBitscore.tsv"
    awk 'BEGIN{FS=OFS="\t"; print "qseqid\tsseqid\tpident\tlength\tmismatch\tgapopen\tqstart\tqend\tsstart\tsend\tevalue\tbitscore\tstaxids\tsscinames\tsskingdoms"} {print}' \
    "${SAMPLE}_vs_${BLASTDATABASE}_blastn_filter_topBitscore.tsv" > tmp_file && mv tmp_file "${SAMPLE}_vs_${BLASTDATABASE}_blastn_filter_topBitscore.tsv"
 
 # Create a Krona output
-   ktImportBLAST "${SAMPLE}_vs_${BLASTDATABASE}_blastn_filter_topBitscore.tsv" -tax "${TAX}" -o "${SAMPLE}_vs_${BLASTDATABASE}_blastn_best-hit_Krona.html"
+   # Krona input without the header line
+   sed '1d' "${SAMPLE}_vs_${BLASTDATABASE}_blastn_filter_topBitscore.tsv" > "${SAMPLE}_krona_input.tmp"
+   ktImportBLAST "${SAMPLE}_krona_input.tmp,${SAMPLE}" -tax "${TAX}" -o "${SAMPLE}_vs_${BLASTDATABASE}_blastn_best-hit_Krona.html"
+   rm -f "${SAMPLE}_krona_input.tmp"
 
 # Create List of Hit per Taxa
    sed '1d' "${SAMPLE}_vs_${BLASTDATABASE}_blastn_filter_topBitscore.tsv" | cut -f 13,14,15 -d $'\t' | sort | uniq -c | sort -nrk1 > "${SAMPLE}_vs_${BLASTDATABASE}_List_nbHit_per_Taxa.tsv"
@@ -786,13 +801,13 @@ if [[ "$KRAKEN" == "yes" ]]; then
  -r "${SAMPLE}_Without-${HOST}_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Species.breport" \
  -o "${SAMPLE}_temp.mpa.tsv"
  
- grep "k__Bacteria" "${SAMPLE}_temp.mpa.tsv" > "${SAMPLE}_temp.mpa_filteredBacteria.tsv"
+ grep "k__Bacteria" "${SAMPLE}_temp.mpa.tsv" > "${SAMPLE}_temp.mpa_filteredBacteria.tsv" || true
  awk '{printf("%s\t\n", $0)}' "${SAMPLE}_temp.mpa_filteredBacteria.tsv" > "${SAMPLE}_temp.mpa_filteredBacteria2.tsv"
  sed '1i #clade_name	relative_abundance' "${SAMPLE}_temp.mpa_filteredBacteria2.tsv" > "${SAMPLE}_temp.mpa_filteredBacteria3.tsv"
  sed '1i #mpa_vJun23_CHOCOPhlAnSGB_202403' "${SAMPLE}_temp.mpa_filteredBacteria3.tsv" > "${SAMPLE}_Bracken_Bacteria_Species_mpa.tsv"
  rm "${SAMPLE}_temp.mpa.tsv" "${SAMPLE}_temp.mpa_filteredBacteria.tsv" "${SAMPLE}_temp.mpa_filteredBacteria2.tsv" "${SAMPLE}_temp.mpa_filteredBacteria3.tsv"
 
-elif [[ "$$KRAKEN" == "no" ]]; then
+elif [[ "$KRAKEN" == "no" ]]; then
    echo "Not running Kraken2/Bracken"
 else
    echo "invalid value for KRAKEN variable. Please set it to 'yes' or 'no'"
@@ -816,6 +831,7 @@ if [[ "$HUMANN" == "yes" ]]; then
    --output-basename "${SAMPLE}" \
    --o-log "${SAMPLE}_humann3_MetaPhlan_run${RUNDATE}.log"
    
+   if [[ -f "${SAMPLE}_Bracken_Bacteria_Species_mpa.tsv" ]] && grep -q "k__Bacteria" "${SAMPLE}_Bracken_Bacteria_Species_mpa.tsv"; then
    humann \
    --input "${SAMPLE}_CleanedReads_Without-${HOST}_MergedPE.fastq" \
    --nucleotide-database "${DBHNuc}" \
@@ -826,6 +842,9 @@ if [[ "$HUMANN" == "yes" ]]; then
    --output Humann3_Bracken_"${SAMPLE}"/ \
    --output-basename "${SAMPLE}" \
    --o-log "${SAMPLE}_humann3_BrackenSpecies_run${RUNDATE}.log"
+   else
+      echo "Warning: no bacterial Bracken profile for ${SAMPLE} - HUMAnN (Bracken profile) skipped"
+   fi
 
 elif [[ "$HUMANN" == "no" ]]; then
   echo "Not running functional analyses of microbial expression with HUMANN"
@@ -887,14 +906,26 @@ move_file() {
     done
 }
 
+# Function to move and rename one file (warning instead of abort if absent)
+move_rename() {
+    local src=$1
+    local dest=$2
+    if [[ -f "$src" ]]; then
+        mv "$src" "$dest"
+        echo "Moved $src to $dest"
+    else
+        echo "Warning: File $src not found"
+    fi
+}
+
 # Sbatch_log
 create_directory "${FOLDER}/Scripts/Sbatch_log"
 
 # Log
 echo "Starting moving log files"
 create_directory "${FOLDER}/Log/${RUN}_run${RUNDATE}"
-mv *.log "${FOLDER}/Log/${RUN}_run${RUNDATE}"
-mv sortmerna/*.log "${FOLDER}/Log/${RUN}_run${RUNDATE}"
+move_file "*.log" "${FOLDER}/Log/${RUN}_run${RUNDATE}"
+move_file "sortmerna/*.log" "${FOLDER}/Log/${RUN}_run${RUNDATE}"
 
 # Reads
 echo "Starting moving reads.gz files"
@@ -939,7 +970,7 @@ move_file "${SAMPLE}_MappedReads_to_${HOST}.tsv" "${FOLDER}/QC_Stats/${RUN}/Mapp
 # Sortmerna
 echo "Starting moving Sortmerna files"
 create_directory "${FOLDER}/sortmerna/${RUN}"
-mv sortmerna/"${SAMPLE}_MicrobialrRNA".* "${FOLDER}/sortmerna/${RUN}"
+move_file "sortmerna/${SAMPLE}_MicrobialrRNA.*" "${FOLDER}/sortmerna/${RUN}"
 
 # QC_Stats
 echo "Starting moving Fastqc files"
@@ -995,17 +1026,17 @@ if [[ "$KRAKEN" == "yes" ]]; then
   done
   
   # Move Kraken2 reports
-  mv "${SAMPLE}"_*_"conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Kraken2.tsv" "${BASE_OUTPUT_MTX}/Reports/Kraken2"
-  mv "${SAMPLE}"_*_"conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}.k2report" "${BASE_OUTPUT_MTX}/Reports/Kraken2"
+  move_file "${SAMPLE}_*_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Kraken2.tsv" "${BASE_OUTPUT_MTX}/Reports/Kraken2"
+  move_file "${SAMPLE}_*_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}.k2report" "${BASE_OUTPUT_MTX}/Reports/Kraken2"
   move_file "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDKRACKEN}_Kraken2.tsv" "${BASE_OUTPUT_16S}/Reports/Kraken2"
   move_file "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDKRACKEN}.k2report" "${BASE_OUTPUT_16S}/Reports/Kraken2"
   
   # Move Bracken species and genus reports
-  mv "${SAMPLE}"_*_"conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Species_Bracken.tsv" "${BASE_OUTPUT_MTX}/Reports/Bracken/Species"
-  mv "${SAMPLE}"_*_"conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Species.breport" "${BASE_OUTPUT_MTX}/Reports/Bracken/Species"
-  mv "${SAMPLE}_Bracken_Bacteria_Species_mpa.tsv" "${BASE_OUTPUT_MTX}/Reports/Bracken/Species"
-  mv "${SAMPLE}"_*_"conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Genus_Bracken.tsv" "${BASE_OUTPUT_MTX}/Reports/Bracken/Genus"
-  mv "${SAMPLE}"_*_"conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Genus.breport" "${BASE_OUTPUT_MTX}/Reports/Bracken/Genus"
+  move_file "${SAMPLE}_*_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Species_Bracken.tsv" "${BASE_OUTPUT_MTX}/Reports/Bracken/Species"
+  move_file "${SAMPLE}_*_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Species.breport" "${BASE_OUTPUT_MTX}/Reports/Bracken/Species"
+  move_file "${SAMPLE}_Bracken_Bacteria_Species_mpa.tsv" "${BASE_OUTPUT_MTX}/Reports/Bracken/Species"
+  move_file "${SAMPLE}_*_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Genus_Bracken.tsv" "${BASE_OUTPUT_MTX}/Reports/Bracken/Genus"
+  move_file "${SAMPLE}_*_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Genus.breport" "${BASE_OUTPUT_MTX}/Reports/Bracken/Genus"
   move_file "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDBRACKEN}_Species_Bracken.tsv" "${BASE_OUTPUT_16S}/Reports/Bracken/Species"
   move_file "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDBRACKEN}_Species.breport" "${BASE_OUTPUT_16S}/Reports/Bracken/Species"
   move_file "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDBRACKEN}_Genus_Bracken.tsv" "${BASE_OUTPUT_16S}/Reports/Bracken/Genus"
@@ -1034,9 +1065,9 @@ if [[ "$KRAKEN" == "yes" ]]; then
   move_file "${SAMPLE}_microbialrRNA_Kraken2_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDKRACKEN}_NoHit.fastq" "${BASE_OUTPUT_16S}/FilteredbyTaxa/NoHit"
   
   # Move Krona visualization files
-  mv "${SAMPLE}"_*_"conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Kraken2_Krona.html" "${BASE_OUTPUT_MTX}/Krona/Kraken2"
-  mv "${SAMPLE}"_*_"conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Species_Bracken_Krona.html" "${BASE_OUTPUT_MTX}/Krona/Bracken"
-  mv "${SAMPLE}"_*_"conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Genus_Bracken_Krona.html" "${BASE_OUTPUT_MTX}/Krona/Bracken"
+  move_file "${SAMPLE}_*_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Kraken2_Krona.html" "${BASE_OUTPUT_MTX}/Krona/Kraken2"
+  move_file "${SAMPLE}_*_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Species_Bracken_Krona.html" "${BASE_OUTPUT_MTX}/Krona/Bracken"
+  move_file "${SAMPLE}_*_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Genus_Bracken_Krona.html" "${BASE_OUTPUT_MTX}/Krona/Bracken"
   move_file "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDKRACKEN}_Kraken2_Krona.html" "${BASE_OUTPUT_16S}/Krona/Kraken2"
   move_file "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDBRACKEN}_Species_Bracken_Krona.html" "${BASE_OUTPUT_16S}/Krona/Bracken"
   move_file "${SAMPLE}_microbialrRNA_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDBRACKEN}_Genus_Bracken_Krona.html" "${BASE_OUTPUT_16S}/Krona/Bracken"
@@ -1123,12 +1154,12 @@ if [[ "$SPADES" == "yes" ]]; then
    create_directory "${FOLDER}/DeNovoVirus/${RUN}/Graph"
 
    # Move SPAdes output files
-   mv "${SAMPLE}_metaviralspades/scaffolds.fasta" "${FOLDER}/DeNovoVirus/${RUN}/Contigs/${SAMPLE}_metaviralSPAdes_scaffolds.fasta"
-   mv "${SAMPLE}_metaviralspades/contigs.fasta" "${FOLDER}/DeNovoVirus/${RUN}/Contigs/${SAMPLE}_metaviralSPAdes_contigs.fasta"
-   mv "${SAMPLE}_metaviralspades/assembly_graph_with_scaffolds.gfa" "${FOLDER}/DeNovoVirus/${RUN}/Graph/${SAMPLE}_assembly_graph_with_scaffolds.gfa"
-   mv "${SAMPLE}_metaviralspades/assembly_graph.fastg" "${FOLDER}/DeNovoVirus/${RUN}/Graph/${SAMPLE}_assembly_graph.fastg"
-   mv "${SAMPLE}_metaviralspades/assembly_graph_after_simplification.gfa" "${FOLDER}/DeNovoVirus/${RUN}/Graph/${SAMPLE}_assembly_graph_after_simplification.gfa"
-   mv "${SAMPLE}_metaviralspades/spades.log" "${FOLDER}/Log/${RUN}_run${RUNDATE}/${SAMPLE}_metaviralSPAdes_run${RUNDATE}.log"
+   move_rename "${SAMPLE}_metaviralspades/scaffolds.fasta" "${FOLDER}/DeNovoVirus/${RUN}/Contigs/${SAMPLE}_metaviralSPAdes_scaffolds.fasta"
+   move_rename "${SAMPLE}_metaviralspades/contigs.fasta" "${FOLDER}/DeNovoVirus/${RUN}/Contigs/${SAMPLE}_metaviralSPAdes_contigs.fasta"
+   move_rename "${SAMPLE}_metaviralspades/assembly_graph_with_scaffolds.gfa" "${FOLDER}/DeNovoVirus/${RUN}/Graph/${SAMPLE}_assembly_graph_with_scaffolds.gfa"
+   move_rename "${SAMPLE}_metaviralspades/assembly_graph.fastg" "${FOLDER}/DeNovoVirus/${RUN}/Graph/${SAMPLE}_assembly_graph.fastg"
+   move_rename "${SAMPLE}_metaviralspades/assembly_graph_after_simplification.gfa" "${FOLDER}/DeNovoVirus/${RUN}/Graph/${SAMPLE}_assembly_graph_after_simplification.gfa"
+   move_rename "${SAMPLE}_metaviralspades/spades.log" "${FOLDER}/Log/${RUN}_run${RUNDATE}/${SAMPLE}_metaviralSPAdes_run${RUNDATE}.log"
 fi
 
 # Functional Human host
@@ -1177,9 +1208,9 @@ create_directory "${FOLDER}/Microbiome_R/${RUN}/Combined"
 # Cleaning Working Directory
 # ---------------------------------
 ls * > "${FOLDER}/Scripts/List_files_remaining_in_LocalWorkingDir_for_${SAMPLE}_run${RUNDATE}.txt"
-rm -rf "${LOCAL_WORK_DIR:?}"/*
+rm -R "${LOCAL_WORK_DIR:?}"/*
 # ---------------------------------
 
 # ---------------------------------
-mv "${FOLDER}"/Scripts/MTX_Illumina."${SLURM_ARRAY_TASK_ID}".${SLURM_ARRAY_JOB_ID}."* "${FOLDER}/Scripts/Sbatch_log" 2>/dev/null || true
+mv "${FOLDER}"/Scripts/MTX_Illumina."${SLURM_ARRAY_TASK_ID}".*.err "${FOLDER}/Scripts/Sbatch_log" || true
 # ---------------------------------

@@ -5,18 +5,23 @@
 #SBATCH --partition=2tcourt                           # Partition
 #SBATCH --nodes=1                                     # Number of node - 1 GENOA node has 96-core and 750 Go RAM
 #SBATCH --ntasks=1                                    # Number of cores/cpus
-#SBATCH --cpus-per-task=96                            # Cpus per task
+#SBATCH --cpus-per-task=48                            # Cpus per task
 #SBATCH --time=00-05:00                               # Runtime in DD-HH:MM
 #SBATCH --mem=25G                                     # Memory for all cores in Gbytes
 #SBATCH --mail-type=ALL                               # BEGIN,END,FAIL,ALL
 #SBATCH --mail-user=mymail                            # Email address
 
 # ---------------------------------
-# Version v1.9
+# Version v1.10
 # ---------------------------------
 # author: Nicolas Nesi
 # University Caen Normandy, INSERM UMR 1311 DYNAMICURE
-# Date:30/01/2026
+# Date: 21/10/2026
+# ---------------------------------
+# Changes v1.10: back to MTX_env after MultiQC, ${RUN}_ variable fix, HUMAnN/MetaPhlAn
+# paths aligned with P01, one BIOM set per host/rRNA filter (no more overwriting),
+# metadata lookup ($RUN_ or $PROJECT_metadata.tsv), log dir created, no CPM on pathcoverage,
+# CPM normalization added for genefamilies
 # ---------------------------------
 
 # ---------------------------------
@@ -49,6 +54,9 @@ DBRC="/dlocal/home/2019013/Databases/Recentrifuge/taxdump"
 
 RUNDATE="$(date '+%Y-%m-%d')"
 
+# Log directory (P01 may have created another one on a different day)
+mkdir -p "${FOLDER}/Log/${RUN}_run${RUNDATE}"
+
 # Threads
 export THREADS="${SLURM_CPUS_PER_TASK}"
 echo "number of threads used $THREADS"
@@ -67,7 +75,7 @@ set -u
 # HUMAnN=3.9
 # kraken-biom=1.2.0
 # KrakenTools=1.2
-# MetaPhlAn=4.1.1
+# MetaPhlAn=4.1.2
 # multiqc=1.28
 # recentrifuge=1.16.1
 # ---------------------------------
@@ -103,6 +111,7 @@ mkdir -p "${PATH2}/Recentrifuge_Kraken_microbialrRNA"
 
 # Microbiome R directories
 echo "Creating Microbiome R subdirectories"
+mkdir -p "${PATH3}/Metadata"
 mkdir -p "${PATH3}/BIOM"
 mkdir -p "${PATH3}/Combined"
 mkdir -p "${PATH3}/HumannPathways"
@@ -136,10 +145,17 @@ cp "${PATH2}"/Reports/Bracken/Species/*_microbialrRNA_conf"${CONFIDENCE}"_db"${D
 
 cp "${PATH2}"/Reports/Bracken/Genus/*_microbialrRNA_conf"${CONFIDENCE}"_db"${DBK16S}"_tr"${THRESHOLDBRACKEN}"_Genus.breport "${PATH2}/All_Bracken_Reports/microbialrRNA/Genus"
 
-if [[ -f "${FOLDER}/Scripts/${PROJECT}_metadata.tsv" ]]; then
- cp "${FOLDER}/Scripts/${PROJECT}_metadata.tsv" "${PATH3}/Metadata/"
-else 
- echo "No metadata file provided"
+# Metadata file: ${RUN}_metadata.tsv (as documented in the Config) or ${PROJECT}_metadata.tsv
+METADATA=""
+for cand in "${FOLDER}/Scripts/${RUN}_metadata.tsv" "${FOLDER}/Scripts/${PROJECT}_metadata.tsv"; do
+  if [[ -f "${cand}" ]]; then
+    cp "${cand}" "${PATH3}/Metadata/"
+    METADATA="${PATH3}/Metadata/$(basename "${cand}")"
+    break
+  fi
+done
+if [[ -z "${METADATA}" ]]; then
+  echo "No metadata file provided"
 fi
 # ---------------------------------
 
@@ -290,226 +306,66 @@ fi
 # ---------------------------------
 # Create BIOM for R package Phyloseq from Bracken reports outputs
 # ---------------------------------
+# One set of BIOM files per filter (With / Without host / Without host and microbial rRNA)
+# Output names carry the set tag so that they no longer overwrite each other.
+make_biom() {
+  local level="$1" code="$2" tag="$3"          # level: Species|Genus ; code: S|G ; tag: With-HOST ...
+  local dir="${PATH1}/All_Bracken_Reports/${tag}/${level}"
+  local bdir="${dir}/biom"
+  local f newname
+  mkdir -p "${bdir}"
+
+  # remove part of the input file name (keep sample name only)
+  for f in "${dir}"/*.breport; do
+    newname="$(basename "${f}")"
+    newname="${newname%%_*}"
+    mv "${f}" "${bdir}/${newname}.breport"
+  done
+
+  local reports=("${bdir}"/*.breport)
+  if [[ ${#reports[@]} -eq 0 ]]; then
+    echo "No Bracken ${level} reports for ${tag}: BIOM skipped"
+    return 0
+  fi
+
+  local out="${PATH3}/BIOM/All_Bracken${level}_${tag}"
+
+  kraken-biom \
+  --kraken_reports_fp "${reports[@]}" \
+  --max D \
+  --min "${code}" \
+  --fmt json \
+  --otu_fp "${out}_TaxID-OTUs_forPhyloT.txt" \
+  --output_fp "${out}_BIOM-json.biom"
+
+  kraken-biom \
+  --kraken_reports_fp "${reports[@]}" \
+  --max D \
+  --min "${code}" \
+  --fmt tsv \
+  --output_fp "${out}_BIOM-tsv.tsv"
+
+  if [[ -n "${METADATA}" ]]; then
+    kraken-biom \
+    --kraken_reports_fp "${reports[@]}" \
+    --max D \
+    --min "${code}" \
+    --metadata "${METADATA}" \
+    --output_fp "${out}_withMetadata_BIOM-HDF5.biom"
+  else
+    echo "No metadata file: BIOM with metadata skipped for ${tag} ${level}"
+  fi
+}
+
 echo "Create BIOM files from Bracken Species outputs"
-
-# remove part of the input file name
-mkdir -p "${PATH1}/All_Bracken_Reports/With-${HOST}/Species/biom"
-
-cd "${PATH1}/All_Bracken_Reports/With-${HOST}/Species"
-
-for file in *.breport
-  do newname=$(echo "$file" | awk -F'_' '{print $1}') 
-  dest="${PATH1}/All_Bracken_Reports/With-${HOST}/Species/biom/${newname}.breport"
-  mv "$file" "$dest" 
-done
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/With-${HOST}/Species/biom"/*.breport \
---max D \
---min S \
---fmt json \
---otu_fp "${PATH3}/BIOM/All_BrackenSpecies_TaxID-OTUs_forPhyloT.txt" \
---output_fp "${PATH3}/BIOM/All_BrackenSpecies_BIOM-json.biom"
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/With-${HOST}/Species/biom"/*.breport \
---max D \
---min S \
---fmt tsv \
---output_fp "${PATH3}/BIOM/All_BrackenSpecies_BIOM-tsv.tsv"
-
-if [[ -f "${PATH3}/Metadata/Project_metadata.tsv" ]]; then
-  kraken-biom \
-  --kraken_reports_fp "${PATH1}/All_Bracken_Reports/With-${HOST}/Species/biom"/*.breport \
-  --max D \
-  --min S \
-  --metadata "${PATH3}/Metadata/Project_metadata.tsv" \
-  --output_fp "${PATH3}/BIOM/All_BrackenSpecies_withMetadata_BIOM-HDF5.biom"
-else
-  echo "No metadata file found at ${PATH3}/Metadata/Project_metadata.tsv"
-fi
-
-mkdir -p "${PATH1}/All_Bracken_Reports/Without-${HOST}/Species/biom"
-
-cd "${PATH1}/All_Bracken_Reports/Without-${HOST}/Species/"
-
-for file in *.breport
-  do newname=$(echo "$file" | awk -F'_' '{print $1}') 
-  dest="${PATH1}/All_Bracken_Reports/Without-${HOST}/Species/biom/${newname}.breport"
-  mv "$file" "$dest" 
-done
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}/Species/biom"/*.breport \
---max D \
---min S \
---fmt json \
---otu_fp "${PATH3}/BIOM/All_BrackenSpecies_TaxID-OTUs_forPhyloT.txt" \
---output_fp "${PATH3}/BIOM/All_BrackenSpecies_BIOM-json.biom"
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}/Species/biom"/*.breport \
---max D \
---min S \
---fmt tsv \
---output_fp "${PATH3}/BIOM/All_BrackenSpecies_BIOM-tsv.tsv"
-
-if [[ -f "${PATH3}/Metadata/Project_metadata.tsv" ]]; then
-   kraken-biom \
-   --kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}/Species/biom"/*.breport \
-   --max D \
-   --min S \
-   --metadata "${PATH3}/Metadata/Project_metadata.tsv" \
-   --output_fp "${PATH3}/BIOM/All_BrackenSpecies_WithoutMetadata_BIOM-HDF5.biom"
-else
-  echo "No metadata file found at ${PATH3}/Metadata/Project_metadata.tsv"
-fi
-
-mkdir -p "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Species/biom"
-
-cd "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Species/"
-
-for file in *.breport
-  do newname=$(echo "$file" | awk -F'_' '{print $1}') 
-  dest="${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Species/biom/${newname}.breport"
-  mv "$file" "$dest" 
-done
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Species/biom"/*.breport \
---max D \
---min S \
---fmt json \
---otu_fp "${PATH3}/BIOM/All_BrackenSpecies_TaxID-OTUs_forPhyloT.txt" \
---output_fp "${PATH3}/BIOM/All_BrackenSpecies_BIOM-json.biom"
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Species/biom"/*.breport \
---max D \
---min S \
---fmt tsv \
---output_fp "${PATH3}/BIOM/All_BrackenSpecies_BIOM-tsv.tsv"
-
-if [[ -f "${PATH3}/Metadata/Project_metadata.tsv" ]]; then
-  kraken-biom \
-  --kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Species/biom"/*.breport \
-  --max D \
-  --min S \
-  --metadata "${PATH3}/Metadata/Project_metadata.tsv" \
-  --output_fp "${PATH3}/BIOM/All_BrackenSpecies_WithoutMetadata_BIOM-HDF5.biom"
-else
-  echo "No metadata file found at ${PATH3}/Metadata/Project_metadata.tsv"
-fi
+make_biom Species S "With-${HOST}"
+make_biom Species S "Without-${HOST}"
+make_biom Species S "Without-${HOST}_Without-microbialrRNA"
 
 echo "Create BIOM files from Bracken Genus outputs"
-
-mkdir -p "${PATH1}/All_Bracken_Reports/With-${HOST}/Genus/biom"
-
-cd "${PATH1}/All_Bracken_Reports/With-${HOST}/Genus/"
-
-for file in *.breport
-  do newname=$(echo "$file" | awk -F'_' '{print $1}') 
-  dest="${PATH1}/All_Bracken_Reports/With-${HOST}/Genus/biom/${newname}.breport"
-  mv "$file" "$dest" 
-done
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/With-${HOST}/Genus/biom"/*.breport \
---max D \
---min G \
---fmt json \
---otu_fp "${PATH3}/BIOM/All_BrackenGenus_TaxID-OTUs_forPhyloT.txt" \
---output_fp "${PATH3}/BIOM/All_BrackenGenus_BIOM-json.biom"
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/With-${HOST}/Genus/biom"/*.breport \
---max D \
---min G \
---fmt tsv \
---output_fp "${PATH3}/BIOM/All_BrackenGenus_BIOM-tsv.tsv"
-
-if [[ -f "${PATH3}/Metadata/Project_metadata.tsv" ]]; then
-   kraken-biom \
-   --kraken_reports_fp "${PATH1}/All_Bracken_Reports/With-${HOST}/Genus/biom"/*.breport \
-   --max D \
-   --min G \
-   --metadata "${PATH3}/Metadata/Project_metadata.tsv" \
-   --output_fp "${PATH3}/BIOM/All_BrackenGenus_withMetadata_BIOM-HDF5.biom"
-else
-  echo "No metadata file found at ${PATH3}/Metadata/Project_metadata.tsv"
-fi
-
-mkdir -p "${PATH1}/All_Bracken_Reports/Without-${HOST}/Genus/biom"
-
-cd "${PATH1}/All_Bracken_Reports/Without-${HOST}/Genus/"
-
-for file in *.breport
-  do newname=$(echo "$file" | awk -F'_' '{print $1}') 
-  dest="${PATH1}/All_Bracken_Reports/Without-${HOST}/Genus/biom/${newname}.breport"
-  mv "$file" "$dest" 
-done
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}/Genus/biom"/*.breport \
---max D \
---min G \
---fmt json \
---otu_fp "${PATH3}/BIOM/All_BrackenGenus_TaxID-OTUs_forPhyloT.txt" \
---output_fp "${PATH3}/BIOM/All_BrackenGenus_BIOM-json.biom"
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}/Genus/biom"/*.breport \
---max D \
---min G \
---fmt tsv \
---output_fp "${PATH3}/BIOM/All_BrackenGenus_BIOM-tsv.tsv"
-
-if [[ -f "${PATH3}/Metadata/Project_metadata.tsv" ]]; then
-   kraken-biom \
-   --kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}/Genus/biom"/*.breport \
-   --max D \
-   --min G \
-   --metadata "${PATH3}/Metadata/Project_metadata.tsv" \
-   --output_fp "${PATH3}/BIOM/All_BrackenGenus_WithoutMetadata_BIOM-HDF5.biom"
-else
-  echo "No metadata file found at ${PATH3}/Metadata/Project_metadata.tsv"
-fi
-
-mkdir -p "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Genus/biom"
-
-cd "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Genus/"
-
-for file in *.breport
-  do newname=$(echo "$file" | awk -F'_' '{print $1}') 
-  dest="${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Genus/biom/${newname}.breport"
-  mv "$file" "$dest" 
-done
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Genus/biom"/*.breport \
---max D \
---min G \
---fmt json \
---otu_fp "${PATH3}/BIOM/All_BrackenGenus_TaxID-OTUs_forPhyloT.txt" \
---output_fp "${PATH3}/BIOM/All_BrackenGenus_BIOM-json.biom"
-
-kraken-biom \
---kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Genus/biom"/*.breport \
---max D \
---min G \
---fmt tsv \
---output_fp "${PATH3}/BIOM/All_BrackenGenus_BIOM-tsv.tsv"
-
-if [[ -f "${PATH3}/Metadata/Project_metadata.tsv" ]]; then
-   kraken-biom \
-   --kraken_reports_fp "${PATH1}/All_Bracken_Reports/Without-${HOST}_Without-microbialrRNA/Genus/biom"/*.breport \
-   --max D \
-   --min G \
-   --metadata "${PATH3}/Metadata/Project_metadata.tsv" \
-   --output_fp "${PATH3}/BIOM/All_BrackenGenus_WithoutMetadata_BIOM-HDF5.biom"
-else
-  echo "No metadata file found at ${PATH3}/Metadata/Project_metadata.tsv"
-fi
+make_biom Genus G "With-${HOST}"
+make_biom Genus G "Without-${HOST}"
+make_biom Genus G "Without-${HOST}_Without-microbialrRNA"
 # ---------------------------------
 
 # ---------------------------------
@@ -518,6 +374,8 @@ fi
 BRACKEN_DIR="${PATH1}/All_Bracken_Reports/With-${HOST}/Species"
 OUTPUT_DIR="${PATH3}/OTU_Table"
 OUTPUT_FILE="${OUTPUT_DIR}/Bracken_With${HOST}_Species_combined_otu.tsv"
+
+cd "${OUTPUT_DIR}"   # temporary files are created here and removed at the end
 
 for f in "$BRACKEN_DIR"/*_Bracken.tsv; do
     awk -F'\t' -v OFS='\t' 'NR==1 {print; next} {gsub(/ /, "-", $1); print}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
@@ -576,7 +434,7 @@ rcf \
 --scoring KRAKEN \
 --minscore 25 \
 --extra TSV \
---outprefix "${PATH1}/Recentrifuge_Kraken_With-${HOST}/AllSamples_With-${HOST}_Kraken2_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Recentrifuge.html" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/Recentrifuge_Kraken2_With-${HOST}_run${RUNDATE}.log"
+--outprefix "${PATH1}/Recentrifuge_Kraken_With-${HOST}/AllSamples_With-${HOST}_Kraken2_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Recentrifuge" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/Recentrifuge_Kraken2_With-${HOST}_run${RUNDATE}.log"
 
 cp "${PATH1}"/Reports/Kraken2/*_Without-"${HOST}"_conf"${CONFIDENCE}"_db"${DBKMTX}"_tr"${THRESHOLDKRACKEN}"_Kraken2.tsv "${PATH1}"/Recentrifuge_Kraken_Without-"${HOST}"/
 
@@ -590,7 +448,7 @@ rcf \
 --scoring KRAKEN \
 --minscore 25 \
 --extra TSV \
---outprefix "${PATH1}/Recentrifuge_Kraken_Without-${HOST}/AllSamples_Without-${HOST}_Kraken2_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Recentrifuge.html" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/Recentrifuge_Kraken2_Without-${HOST}_run${RUNDATE}.log"
+--outprefix "${PATH1}/Recentrifuge_Kraken_Without-${HOST}/AllSamples_Without-${HOST}_Kraken2_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Recentrifuge" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/Recentrifuge_Kraken2_Without-${HOST}_run${RUNDATE}.log"
 
 cp "${PATH1}"/Reports/Kraken2/*_Without-"${HOST}"_Without-microbialrRNA_conf"${CONFIDENCE}"_db"${DBKMTX}"_tr"${THRESHOLDKRACKEN}"_Kraken2.tsv "${PATH1}"/Recentrifuge_Kraken_Without-"${HOST}"_Without-microbialrRNA/
 
@@ -604,7 +462,7 @@ rcf \
 --scoring KRAKEN \
 --minscore 25 \
 --extra TSV \
---outprefix "${PATH1}/Recentrifuge_Kraken_Without-${HOST}_Without-microbialrRNA/AllSamples_Without-${HOST}_Without-microbialrRNA_Kraken2_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Recentrifuge.html" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/Recentrifuge_Kraken2_Without-${HOST}_Without-microbialrRNA_run${RUNDATE}.log"
+--outprefix "${PATH1}/Recentrifuge_Kraken_Without-${HOST}_Without-microbialrRNA/AllSamples_Without-${HOST}_Without-microbialrRNA_Kraken2_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDKRACKEN}_Recentrifuge" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/Recentrifuge_Kraken2_Without-${HOST}_Without-microbialrRNA_run${RUNDATE}.log"
 
 cp "${PATH2}"/Reports/Kraken2/*_microbialrRNA_conf"${CONFIDENCE}"_db"${DBK16S}"_tr"${THRESHOLDKRACKEN}"_Kraken2.tsv "${PATH2}"/Recentrifuge_Kraken_microbialrRNA/
 
@@ -618,7 +476,7 @@ rcf \
 --scoring KRAKEN \
 --minscore 25 \
 --extra TSV \
---outprefix "${PATH2}/Recentrifuge_Kraken_microbialrRNA/AllSamples_microbialrRNA_Kraken2_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDKRACKEN}_Recentrifuge.html" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/Recentrifuge_Kraken/Recentrifuge_Kraken2_microbialrRNA_run${RUNDATE}.log"
+--outprefix "${PATH2}/Recentrifuge_Kraken_microbialrRNA/AllSamples_microbialrRNA_Kraken2_conf${CONFIDENCE}_db${DBK16S}_tr${THRESHOLDKRACKEN}_Recentrifuge" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/Recentrifuge_Kraken2_microbialrRNA_run${RUNDATE}.log"
 # ---------------------------------
 
 # ---------------------------------
@@ -638,7 +496,7 @@ cd "${FOLDER}/QC_Stats/${RUN}/Raw_Fastqc/"
 for file in *.zip; do unzip -o "$file" -d fastqc_unzipped/ ; done
 
 multiqc \
---outdir "${FOLDER}"/QC_Stats/"${RUN}"/Raw_Fastq/MultiQC \
+--outdir "${FOLDER}"/QC_Stats/"${RUN}"/Raw_Fastqc/MultiQC \
 --filename "${RUN}"_MultiQC_Raw_Fastq \
 --force \
 --export \
@@ -687,35 +545,44 @@ multiqc \
 --export \
 --clean-up \
 "${FOLDER}/QC_Stats/${RUN}/MultiQC_FastpKraken/Fastp/" "${FOLDER}/QC_Stats/${RUN}/MultiQC_FastpKraken/Kraken2/" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/MultiQC_Fastp-Kraken2_run${RUNDATE}.log"
+
+# Back to the main environment (MetaPhlAn, hclust2 and HUMAnN tools are in MTX_env)
+set +u
+conda deactivate
+conda activate MTX_env
+set -u
 # ---------------------------------
 
 # ---------------------------------
 # Merge MetaphlAn 4 outputs
 # ---------------------------------
 if [[ "$METAPHLAN" == "yes" ]]; then
-  
+
+  MPA_DIR="${FOLDER}/TaxonomicProfile/${RUN}/MetaPhlAn/profile"
+  mkdir -p "${MPA_DIR}/MergedSamples"
+
   echo "Merge abundance tables of all samples. The output merge table can then be used with file2meco R package (mpa2meco)"
   
    merge_metaphlan_tables.py \
-   "${FOLDER}"/TaxonomicProfile/MetaPhlAn_"${RUN}"/profile/*_MetaphlAn_profile.txt \
-   -o "${FOLDER}"/TaxonomicProfile/MetaPhlAn_"${RUN}"/profile/MergedSamples/AllSamples_merge_abundance_table_"${RUN}".txt
+   "${MPA_DIR}"/*_MetaphlAn_profile.txt \
+   -o "${MPA_DIR}"/MergedSamples/AllSamples_merge_abundance_table_"${RUN}".txt
   
    merge_vsc_tables.py \
-   "${FOLDER}"/TaxonomicProfile/MetaPhlAn_"${RUN}"/profile/*_MetaphlAn_virome_vsc.txt \
-   -o "${FOLDER}"/TaxonomicProfile/MetaPhlAn_"${RUN}"/profile/MergedSamples/AllSamples_merge_virome_table_"${RUN}".txt
+   "${MPA_DIR}"/virus/*_MetaphlAn_virome_vsc.txt \
+   -o "${MPA_DIR}"/MergedSamples/AllSamples_merge_virome_table_"${RUN}".txt
   
    echo "Generate a species-only abundance table"
    
-  grep -E "s__|SRS" "${FOLDER}"/TaxonomicProfile/MetaPhlAn_"${RUN}"/profile/MergedSamples/AllSamples_merge_abundance_table_"${RUN}".txt \
+  grep -E "s__|SRS" "${MPA_DIR}"/MergedSamples/AllSamples_merge_abundance_table_"${RUN}".txt \
    | grep -v "t__" \
    | sed "s/^.*|//g" \
    | sed "s/SRS[0-9]*-//g" \
-   > "${FOLDER}"/TaxonomicProfile/MetaPhlAn_"${RUN}"/profile/MergedSamples/AllSamples_merge_abundance_table_species_"${RUN}".txt
+   > "${MPA_DIR}"/MergedSamples/AllSamples_merge_abundance_table_species_"${RUN}".txt
    
    echo "Generate an heatmap of species abundance"
    hclust2.py \
-   -i "${FOLDER}"/TaxonomicProfile/MetaPhlAn_"${RUN}"/profile/MergedSamples/AllSamples_merge_abundance_table_species_"${RUN}".txt \
-   -o "${FOLDER}"/TaxonomicProfile/MetaPhlAn_"${RUN}"/profile/MergedSamples/AllSamples_metaphlan4_abundance_heatmap_species.png \
+   -i "${MPA_DIR}"/MergedSamples/AllSamples_merge_abundance_table_species_"${RUN}".txt \
+   -o "${MPA_DIR}"/MergedSamples/AllSamples_metaphlan4_abundance_heatmap_species.png \
    --f_dist_f braycurtis \
    --s_dist_f braycurtis \
    --cell_aspect_ratio 0.5 \
@@ -736,33 +603,33 @@ if [[ "$HUMANN" == "yes" ]]; then
    echo "Joinning Humann3 Tables of all samples"
    
    humann_join_tables \
-   --input "${FOLDER}/FunctionalMicrobiome/Humann3_MetaPhlAn/Abundance_Genefamily/" \
-   --output "${FOLDER}/FunctionalMicrobiome/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_genefamilies.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Abundance_Genefamily/" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_genefamilies.tsv" \
    --file_name genefamilies
    
    humann_join_tables \
-   --input "${FOLDER}/FunctionalMicrobiome/Humann3_Bracken/Abundance_Genefamily/" \
-   --output "${FOLDER}/FunctionalMicrobiome/Humann3_Bracken/Join_Tables/$RUN_AllSamples_genefamilies.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Abundance_Genefamily/" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_genefamilies.tsv" \
    --file_name genefamilies
    
    humann_join_tables \
-   --input "${FOLDER}/FunctionalMicrobiome/Humann3_MetaPhlAn/Abundance_Pathway/" \
-   --output "${FOLDER}/FunctionalMicrobiome/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathabundance.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Abundance_Pathway/" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathabundance.tsv" \
    --file_name pathabundance
    
    humann_join_tables \
-   --input "${FOLDER}/FunctionalMicrobiome/Humann3_Bracken/Abundance_Pathway/" \
-   --output "${FOLDER}/FunctionalMicrobiome/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathabundance.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Abundance_Pathway/" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathabundance.tsv" \
    --file_name pathabundance
    
    humann_join_tables \
-   --input "${FOLDER}/FunctionalMicrobiome/Humann3_MetaPhlAn/Pathway_coverage/" \
-   --output "${FOLDER}/FunctionalMicrobiome/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathcoverage.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Pathway_coverage/" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathcoverage.tsv" \
    --file_name pathcoverage
    
    humann_join_tables \
-   --input "${FOLDER}/FunctionalMicrobiome/Humann3_Bracken/Pathway_coverage/" \
-   --output "${FOLDER}/FunctionalMicrobiome/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathcoverage.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Pathway_coverage/" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathcoverage.tsv" \
    --file_name pathcoverage
 # ---------------------------------
    
@@ -772,25 +639,24 @@ if [[ "$HUMANN" == "yes" ]]; then
    echo "Normalization to CPM"
    
    humann_renorm_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathabundance.tsv" \
-   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathabundance_norm-cpm.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_genefamilies.tsv" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_genefamilies_norm-cpm.tsv" \
    --units cpm
    
    humann_renorm_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathabundance.tsv" \
-   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathabundance_norm-cpm.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_genefamilies.tsv" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_genefamilies_norm-cpm.tsv" \
    --units cpm
    
    humann_renorm_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathcoverage.tsv" \
-   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathcoverage_norm-cpm.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathabundance.tsv" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathabundance_norm-cpm.tsv" \
    --units cpm
    
    humann_renorm_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathcoverage.tsv" \
-   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathcoverage_norm-cpm.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathabundance.tsv" \
+   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathabundance_norm-cpm.tsv" \
    --units cpm
-# ---------------------------------
    
 # ---------------------------------
 # Create stratified and non stratified tables
@@ -798,71 +664,56 @@ if [[ "$HUMANN" == "yes" ]]; then
    echo "Creating stratified and unstratified files"
    
    humann_split_stratified_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathabundance.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathabundance.tsv" \
    --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/"
    
    humann_split_stratified_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathabundance.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathabundance.tsv" \
    --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/"
    
    humann_split_stratified_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathabundance_norm-cpm.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathabundance_norm-cpm.tsv" \
    --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/"
    
    humann_split_stratified_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathabundance_norm-cpm.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathabundance_norm-cpm.tsv" \
    --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/"
    
    humann_split_stratified_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathcoverage.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathcoverage.tsv" \
    --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/"
    
    humann_split_stratified_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathcoverage.tsv" \
+   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathcoverage.tsv" \
    --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/"
-   
-   humann_split_stratified_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathcoverage_norm-cpm.tsv" \
-   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/"
-   
-   humann_split_stratified_table \
-   --input "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathcoverage_norm-cpm.tsv" \
-   --output "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/"
-# ---------------------------------
 
 # ---------------------------------
 # Format files for R package microeco 
 # ---------------------------------
    echo "The output merge table can then be used with file2meco R package (humann2meco)"
    
-   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathabundance_stratified.tsv" \
-   > "${PATH3}"/HumannPathways/"$RUN_AllSamples_pathabundance_stratified_MetaphlAn.tsv"
+   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathabundance_stratified.tsv" \
+   > "${PATH3}"/HumannPathways/"${RUN}_AllSamples_pathabundance_stratified_MetaphlAn.tsv"
    
-   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathabundance_norm-cpm_stratified.tsv" \
-   > "${PATH3}"/HumannPathways/"$RUN_AllSamples_pathabundance_norm-cpm_stratified_MetaphlAn.tsv"
+   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathabundance_norm-cpm_stratified.tsv" \
+   > "${PATH3}"/HumannPathways/"${RUN}_AllSamples_pathabundance_norm-cpm_stratified_MetaphlAn.tsv"
    
-   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathabundance_stratified.tsv" \
-   > "${PATH3}"/HumannPathways/"$RUN_AllSamples_pathabundance_stratified_Bracken.tsv"
+   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathabundance_stratified.tsv" \
+   > "${PATH3}"/HumannPathways/"${RUN}_AllSamples_pathabundance_stratified_Bracken.tsv"
    
-   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathabundance_norm-cpm_stratified.tsv" \
-   > "${PATH3}"/HumannPathways/"$RUN_AllSamples_pathabundance_norm-cpm_stratified_Bracken.tsv"
+   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathabundance_norm-cpm_stratified.tsv" \
+   > "${PATH3}"/HumannPathways/"${RUN}_AllSamples_pathabundance_norm-cpm_stratified_Bracken.tsv"
    
-   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathcoverage_stratified.tsv" \
-   > "${PATH3}"/HumannPathways/"$RUN_AllSamples_pathcoverage_stratified_MetaphlAn.tsv"
+   sed 's/_Coverage//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/${RUN}_AllSamples_pathcoverage_stratified.tsv" \
+   > "${PATH3}"/HumannPathways/"${RUN}_AllSamples_pathcoverage_stratified_MetaphlAn.tsv"
    
-   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_MetaPhlAn/Join_Tables/$RUN_AllSamples_pathcoverage_norm-cpm_stratified.tsv" \
-   > "${PATH3}"/HumannPathways/"$RUN_AllSamples_pathcoverage_norm-cpm_stratified_MetaphlAn.tsv"
-   
-   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathcoverage_stratified.tsv" \
-   > "${PATH3}"/HumannPathways/"$RUN_AllSamples_pathcoverage_stratified_Bracken.tsv"
-   
-   sed 's/_Abundance//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/$RUN_AllSamples_pathcoverage_norm-cpm_stratified.tsv" \
-   > "${PATH3}"/HumannPathways/"$RUN_AllSamples_pathcoverage_norm-cpm_stratified_Bracken.tsv"
+   sed 's/_Coverage//g' "${FOLDER}/FunctionalMicrobiome/${RUN}/Humann3_Bracken/Join_Tables/${RUN}_AllSamples_pathcoverage_stratified.tsv" \
+   > "${PATH3}"/HumannPathways/"${RUN}_AllSamples_pathcoverage_stratified_Bracken.tsv"
 else 
   echo "No Humann run"
 fi
 # ---------------------------------
 
 # ---------------------------------
-mv "${FOLDER}"/Scripts/Outputs-for-R*.err "${FOLDER}"/Scripts/Sbatch_log/
+mv "${FOLDER}"/Scripts/Outputs-for-R*.err "${FOLDER}"/Scripts/Sbatch_log/ || true
 # ---------------------------------

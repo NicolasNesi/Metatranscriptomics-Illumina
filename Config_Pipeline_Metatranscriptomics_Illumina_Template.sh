@@ -5,11 +5,14 @@
 # -----------------------------------------------
 
 # -----------------------------------------------
-# Version v1.9
+# Version v1.10
 # -----------------------------------------------
 # author: Nicolas Nesi
 # University Caen Normandy, INSERM UMR 1311 DYNAMICURE
-# Date: 13/04/2026
+# Date: 21/10/2026
+# -----------------------------------------------
+# Changes v1.10: fix undefined $FOLDER in step 0, KRAKEN checked, yes/no validation,
+# -h exits 0, Kraken2 hit-groups message fixed
 # -----------------------------------------------
 
 # -----------------------------------------------
@@ -134,7 +137,7 @@ usage() {
     echo ""
     echo -e "\e[31m!! DONT FORGET TO ADD IN SCRIPTS/ YOUR List_samples_RUN.txt FILE !!\e[0m"
     echo ""
-    exit 1
+    exit "${USAGE_EXIT:-1}"
 }
 # -----------------------------------------------
 
@@ -164,14 +167,14 @@ SEQUENCER="yes"
 # -----------------------------------------------
 # DIRECTORIES and INPUT FILES PATH
 # -----------------------------------------------
-# $GROUP: path to the folder in /dlocal/home/201913/Data/ - Options available: 
+# $GROUP: path to the folder in /dlocal/home/2019013/Data/ - Options available: 
     # BacterioCaen
     # Colab 
     # Rouen 
     # ViroCaen
     # Labeo
 GROUP="ViroCaen"
-# $PROJECT: name of the Project main directory in /dlocal/home/201913/Data/$GROUP (e.g. DYNAMICH, Microbiosthme_alice, DynamiK)
+# $PROJECT: name of the Project main directory in /dlocal/home/2019013/Data/$GROUP (e.g. DYNAMICH, Microbiosthme_alice, DynamiK)
 PROJECT=""
 # $RUN: name of Run, corresponding to the Illumina folder created (e.g. )
 RUN=""
@@ -336,7 +339,7 @@ while [[ $# -gt 0 ]]; do
         -sa|--salmon)  SALMON="$2"; shift 2 ;;
         -sp|--spades)  SPADES="$2"; shift 2 ;;
         -pi|--pipeline) PIPELINE="$2"; shift 2 ;;
-         -h|--help)    usage; exit 0 ;;
+         -h|--help)    USAGE_EXIT=0; usage ;;
           *) 
             echo "Invalid option: $1" >&2
             usage
@@ -359,7 +362,7 @@ MISSING_VARS=()
 
 for VAR in PROJECT EMAIL ARRAY SEQUENCER GROUP RUN PATHSCRIPTS QSCORE HOST \
            DBKMTX DBK16S CONFIDENCE THRESHOLDKRACKEN THRESHOLDBRACKEN READLENGTHBRACKEN BLASTN \
-           BLASTDATABASE EVALUE METAPHLAN MOTUS CUTOFF HUMANN SALMON SPADES PIPELINE; do
+           BLASTDATABASE EVALUE METAPHLAN MOTUS CUTOFF HUMANN SALMON SPADES KRAKEN PIPELINE; do
    if [ -z "${!VAR}" ]; then
        echo -e "\e[31mError: $VAR is not set!\e[0m"
        MISSING_VARS+=("$VAR")
@@ -370,6 +373,19 @@ done
 if [[ ${#MISSING_VARS[@]} -gt 0 ]]; then
     usage
     exit 1
+fi
+
+# Validate yes/no options
+for VAR in SEQUENCER KRAKEN BLASTN METAPHLAN MOTUS HUMANN SALMON SPADES; do
+    if [[ "${!VAR}" != "yes" && "${!VAR}" != "no" ]]; then
+        echo -e "\e[31mError: $VAR must be 'yes' or 'no' (got '${!VAR}')\e[0m" >&2
+        exit 1
+    fi
+done
+
+# HUMAnN on the Bracken profile needs Kraken2/Bracken outputs
+if [[ "$HUMANN" == "yes" && "$KRAKEN" == "no" ]]; then
+    echo "Warning: HUMAnN=yes but KRAKEN=no -> the HUMAnN run based on the Bracken profile will be skipped."
 fi
 
 RUNDATE="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -402,7 +418,7 @@ echo "Is taxonomic profile run with Kraken2/Bracken $KRAKEN"
 echo "Kraken2 database used for metatranscriptomic taxonomic profiling: $DBKMTX"
 echo "Kraken2 database used for rRNA taxonomic profiling: $DBK16S"
 echo "Kraken2 analyses run with a confidence score of: $CONFIDENCE"
-echo "Kraken2 analyses run with a number of minimum hit groups of: $THRESHOLDBRACKEN"
+echo "Kraken2 analyses run with a number of minimum hit groups of: $THRESHOLDKRACKEN"
 echo "Bracken analyses run with a number of reads required PRIOR to abundance estimation of: $THRESHOLDBRACKEN"
 echo "Bracken reads length used : $READLENGTHBRACKEN"
 echo "Is taxonomic profile run with Blastn? $BLASTN"
@@ -455,7 +471,7 @@ if [[ "$PIPELINE" == "all" ]]; then
    if [[ "$SEQUENCER" == "yes" ]]; then
       echo "Step 0 - Rename Illumina Fastq output"
       
-      PATH1="/dlocal/home/2019013/Data/$GROUP/$PROJECT/$FOLDER/Output_Illumina/$RUN"
+      PATH1="/dlocal/home/2019013/Data/$GROUP/$PROJECT/Output_Illumina/$RUN"
       
       pushd "${PATH1}"/Alignment_1/*/Fastq/ > /dev/null || { echo "Directory not found"; exit 1; }
       
@@ -505,6 +521,8 @@ if [[ "$PIPELINE" == "all" ]]; then
    
     echo "Step 2: Combining taxonomic and functional outputs for R analyses"
    
+   # NB: afterany => P02 starts even if some P01 array tasks failed (partial tables).
+   #     Use afterok to require that ALL P01 tasks succeeded.
    jid_step2=$(sbatch --parsable --dependency=afterany:"${jid_step1}" $PATHSCRIPTS/P02_MTX_Illumina_Outputs-forR_Template.sh \
    $GROUP $PROJECT $RUN $HOST $DBKMTX $DBK16S $CONFIDENCE $THRESHOLDKRACKEN $THRESHOLDBRACKEN $METAPHLAN $HUMANN)
    
@@ -524,7 +542,7 @@ elif [[ "$PIPELINE" == "step_1" ]]; then
    if [[ "$SEQUENCER" == "yes" ]]; then
        echo "Step 0 - Rename Illumina Fastq output"
        
-       PATH1="/dlocal/home/2019013/Data/$GROUP/$PROJECT/$FOLDER/Output_Illumina/$RUN"
+       PATH1="/dlocal/home/2019013/Data/$GROUP/$PROJECT/Output_Illumina/$RUN"
        
        pushd "${PATH1}"/Alignment_1/*/Fastq/ > /dev/null || { echo "Directory not found"; exit 1; }
        
