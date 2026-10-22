@@ -55,7 +55,7 @@ S59-MTX-HRV-LUNG
 The number of lines is the value to give to `-ar` (e.g. `1-96`).
 
 ### `RUN_metadata.tsv` (optional)
-Sample metadata for R. P02 looks for `Scripts/RUN_metadata.tsv` first, then `Scripts/PROJECT_metadata.tsv`, and copies it to `Microbiome_R/RUN/Metadata/`. Without it, the BIOM files with metadata are skipped (the other BIOM files are still produced). Sample identifiers must match the names in `List_samples_RUN.txt`.
+Sample metadata for R, named after the run. P02 looks for `Scripts/RUN_metadata.tsv` and copies it to `Microbiome_R/RUN/Metadata/`. Without it, the BIOM files with metadata are skipped (the other BIOM files are still produced). Sample identifiers must match the names in `List_samples_RUN.txt`.
 
 ### Fastq files
 With `-s yes` (MiSeq, default), the Config script renames the raw files (`Sample1_Sxx_L001_R1_001.fastq.gz` becomes `Sample1_R1.fastq.gz`) before submission. The renaming is skipped when the files are already renamed.
@@ -225,8 +225,8 @@ Choices that affect results and are worth knowing when interpreting them:
 | Config v1.10 | Fix undefined `$FOLDER` in the renaming step; `KRAKEN` and yes/no values validated; `-h` exits with code 0; correct Kraken2 threshold in messages |
 | P01 v2.10 | fastp without `--dedup`; HUMAnN run on host- and rRNA-depleted merged reads, with the Bracken profile taken from the same read set |
 | P01 v2.9 | Bracken on the 16S database fixed; Salmon redirection fixed; `LOCAL_WORK_DIR` and sample guards; file moves no longer abort the job before cleanup; HUMAnN (Bracken profile) skipped without bacterial profile; MetaPhlAn `--index`; BLAST best-hit selection; portable FastQC renaming; `flagstat` on all reads |
-| P02 v1.11 | MultiQC runs in `MTX_env`; `multiqc_env` removed |
-| P02 v1.10 | `${RUN}_` variable fix; HUMAnN and MetaPhlAn paths aligned with P01; one BIOM set per read set; metadata lookup (`RUN_` or `PROJECT_`); log folder created; no CPM on `pathcoverage`; CPM normalization of gene families added |
+| P02 v1.11 | MultiQC runs in `MTX_env`; `multiqc_env` removed; metadata file is `RUN_metadata.tsv` only |
+| P02 v1.10 | `${RUN}_` variable fix; HUMAnN and MetaPhlAn paths aligned with P01; one BIOM set per read set; metadata lookup fixed; log folder created; no CPM on `pathcoverage`; CPM normalization of gene families added |
 
 ## Author
 Nicolas Nesi, UMR 1311 Inserm DYNAMICURE, Université de Caen Normandie

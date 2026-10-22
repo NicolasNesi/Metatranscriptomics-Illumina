@@ -5,7 +5,7 @@
 #SBATCH --partition=2tcourt                           # Partition
 #SBATCH --nodes=1                                     # Number of node - 1 GENOA node has 96-core and 750 Go RAM
 #SBATCH --ntasks=1                                    # Number of cores/cpus
-#SBATCH --cpus-per-task=96                            # Cpus per task
+#SBATCH --cpus-per-task=48                            # Cpus per task
 #SBATCH --time=00-05:00                               # Runtime in DD-HH:MM
 #SBATCH --mem=25G                                     # Memory for all cores in Gbytes
 #SBATCH --mail-type=ALL                               # BEGIN,END,FAIL,ALL
@@ -18,10 +18,10 @@
 # University Caen Normandy, INSERM UMR 1311 DYNAMICURE
 # Date: 21/10/2026
 # ---------------------------------
-# Changes v1.11: MultiQC runs in MTX_env (multiqc_env removed)
+# Changes v1.11: MultiQC runs in MTX_env (multiqc_env removed); metadata file is ${RUN}_metadata.tsv only
 # Changes v1.10: ${RUN}_ variable fix, HUMAnN/MetaPhlAn
 # paths aligned with P01, one BIOM set per host/rRNA filter (no more overwriting),
-# metadata lookup ($RUN_ or $PROJECT_metadata.tsv), log dir created, no CPM on pathcoverage,
+# metadata lookup ($RUN_metadata.tsv), log dir created, no CPM on pathcoverage,
 # CPM normalization added for genefamilies
 # ---------------------------------
 
@@ -146,17 +146,14 @@ cp "${PATH2}"/Reports/Bracken/Species/*_microbialrRNA_conf"${CONFIDENCE}"_db"${D
 
 cp "${PATH2}"/Reports/Bracken/Genus/*_microbialrRNA_conf"${CONFIDENCE}"_db"${DBK16S}"_tr"${THRESHOLDBRACKEN}"_Genus.breport "${PATH2}/All_Bracken_Reports/microbialrRNA/Genus"
 
-# Metadata file: ${RUN}_metadata.tsv (as documented in the Config) or ${PROJECT}_metadata.tsv
+# Metadata file: Scripts/${RUN}_metadata.tsv (optional)
 METADATA=""
-for cand in "${FOLDER}/Scripts/${RUN}_metadata.tsv" "${FOLDER}/Scripts/${PROJECT}_metadata.tsv"; do
-  if [[ -f "${cand}" ]]; then
-    cp "${cand}" "${PATH3}/Metadata/"
-    METADATA="${PATH3}/Metadata/$(basename "${cand}")"
-    break
-  fi
-done
-if [[ -z "${METADATA}" ]]; then
-  echo "No metadata file provided"
+if [[ -f "${FOLDER}/Scripts/${RUN}_metadata.tsv" ]]; then
+  cp "${FOLDER}/Scripts/${RUN}_metadata.tsv" "${PATH3}/Metadata/"
+									 
+  METADATA="${PATH3}/Metadata/${RUN}_metadata.tsv"
+else						   
+  echo "No metadata file provided (expected ${FOLDER}/Scripts/${RUN}_metadata.tsv)"
 fi
 # ---------------------------------
 
