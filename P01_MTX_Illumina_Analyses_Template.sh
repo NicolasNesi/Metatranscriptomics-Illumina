@@ -5,22 +5,22 @@
 #SBATCH --partition=long                          # Partition
 #SBATCH --nodes=1                                 # Number of node - 1 GENOA node has 96-core and 750 Go RAM
 #SBATCH --ntasks=1                                # Number of cores/cpus
-#SBATCH --cpus-per-task=48                        # Number of cpu per task
+#SBATCH --cpus-per-task=96                        # Number of cpu per task
 #SBATCH --time=04-00:00                           # Runtime in DD-HH:MM
 #SBATCH --mem=500G                                # Memory for all cores in Gbytes (or --mem 752000 in Mbytes)
 #SBATCH --mail-type=ALL                           # BEGIN,END,FAIL,ALL
 #SBATCH --mail-user=mymail       # Email address
 
 # ---------------------------------
-# Version v2.9
+# Version v2.10
 # ---------------------------------
 # author: Nicolas Nesi, Amelie Blanchetiere
 # University Caen Normandy, INSERM UMR 1311 DYNAMICURE
 # Date: 21/10/2026
 # ---------------------------------
-# Changes v2.9: 
-# remove dedup filtering fastp
-# Bracken 16S uses the 16S database, Salmon redirection (2>&1) fixed,
+# Changes v2.10: fastp without --dedup; HUMAnN run on host- and rRNA-depleted merged reads
+# (Bracken profile for HUMAnN taken from the same read set)
+# Changes v2.9: Bracken 16S uses the 16S database, Salmon redirection (2>&1) fixed,
 # LOCAL_WORK_DIR/SAMPLE guards, tolerant file moves (no abort before cleanup),
 # HUMAnN/Bracken skipped when no bacterial profile, MetaPhlAn --index added,
 # BLAST top-hit selection fixed, portable fastqc renaming, flagstat on all reads
@@ -152,7 +152,7 @@ set -u
 # Kraken2=2.1.3
 # KrakenTools=1.2
 # Krona=2.8.1
-# MetaPhlAn=4.1.2
+# MetaPhlAn=4.1.1
 # mOTUs=3.1.0
 # NGmerge=0.5
 # Salmon=1.10.3
@@ -798,7 +798,7 @@ if [[ "$KRAKEN" == "yes" ]]; then
  echo "Convert Bracken outputs to mpa format for Humann"
  
  kreport2mpa.py \
- -r "${SAMPLE}_Without-${HOST}_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Species.breport" \
+ -r "${SAMPLE}_Without-${HOST}_Without-microbialrRNA_conf${CONFIDENCE}_db${DBKMTX}_tr${THRESHOLDBRACKEN}_Species.breport" \
  -o "${SAMPLE}_temp.mpa.tsv"
  
  grep "k__Bacteria" "${SAMPLE}_temp.mpa.tsv" > "${SAMPLE}_temp.mpa_filteredBacteria.tsv" || true
@@ -821,7 +821,7 @@ if [[ "$HUMANN" == "yes" ]]; then
    echo "Functional analyses of microbial expression for sample: ${SAMPLE}" 
    
    humann \
-   --input "${SAMPLE}_CleanedReads_Without-${HOST}_MergedPE.fastq" \
+   --input "${SAMPLE}_CleanedReads_Without-${HOST}_Without-microbialrRNA_MergedPE.fastq" \
    --nucleotide-database "${DBHNuc}" \
    --protein-database "${DBHPro90}" \
    --metaphlan-options "-t rel_ab --index mpa_vJun23_CHOCOPhlAnSGB_202403 --bowtie2db /dlocal/home/2019013/Databases/MetaPhlAn_mpa_vJun23" \
@@ -833,7 +833,7 @@ if [[ "$HUMANN" == "yes" ]]; then
    
    if [[ -f "${SAMPLE}_Bracken_Bacteria_Species_mpa.tsv" ]] && grep -q "k__Bacteria" "${SAMPLE}_Bracken_Bacteria_Species_mpa.tsv"; then
    humann \
-   --input "${SAMPLE}_CleanedReads_Without-${HOST}_MergedPE.fastq" \
+   --input "${SAMPLE}_CleanedReads_Without-${HOST}_Without-microbialrRNA_MergedPE.fastq" \
    --nucleotide-database "${DBHNuc}" \
    --protein-database "${DBHPro90}" \
    --taxonomic-profile "${SAMPLE}_Bracken_Bacteria_Species_mpa.tsv" \

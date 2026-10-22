@@ -5,20 +5,21 @@
 #SBATCH --partition=2tcourt                           # Partition
 #SBATCH --nodes=1                                     # Number of node - 1 GENOA node has 96-core and 750 Go RAM
 #SBATCH --ntasks=1                                    # Number of cores/cpus
-#SBATCH --cpus-per-task=48                            # Cpus per task
+#SBATCH --cpus-per-task=96                            # Cpus per task
 #SBATCH --time=00-05:00                               # Runtime in DD-HH:MM
 #SBATCH --mem=25G                                     # Memory for all cores in Gbytes
 #SBATCH --mail-type=ALL                               # BEGIN,END,FAIL,ALL
 #SBATCH --mail-user=mymail                            # Email address
 
 # ---------------------------------
-# Version v1.10
+# Version v1.11
 # ---------------------------------
 # author: Nicolas Nesi
 # University Caen Normandy, INSERM UMR 1311 DYNAMICURE
 # Date: 21/10/2026
 # ---------------------------------
-# Changes v1.10: back to MTX_env after MultiQC, ${RUN}_ variable fix, HUMAnN/MetaPhlAn
+# Changes v1.11: MultiQC runs in MTX_env (multiqc_env removed)
+# Changes v1.10: ${RUN}_ variable fix, HUMAnN/MetaPhlAn
 # paths aligned with P01, one BIOM set per host/rRNA filter (no more overwriting),
 # metadata lookup ($RUN_ or $PROJECT_metadata.tsv), log dir created, no CPM on pathcoverage,
 # CPM normalization added for genefamilies
@@ -75,7 +76,7 @@ set -u
 # HUMAnN=3.9
 # kraken-biom=1.2.0
 # KrakenTools=1.2
-# MetaPhlAn=4.1.2
+# MetaPhlAn=4.1.1
 # multiqc=1.28
 # recentrifuge=1.16.1
 # ---------------------------------
@@ -482,12 +483,7 @@ rcf \
 # ---------------------------------
 # MultiQC of FastQC
 # ---------------------------------
-set +u
-conda deactivate
-conda activate multiqc_env
-set -u
-# include:
-# multiqc=1.25.1
+# MultiQC is part of MTX_env (multiqc=1.28): no environment change needed
 
 echo "Running Multiqc on Fastqc outputs"
 
@@ -546,11 +542,6 @@ multiqc \
 --clean-up \
 "${FOLDER}/QC_Stats/${RUN}/MultiQC_FastpKraken/Fastp/" "${FOLDER}/QC_Stats/${RUN}/MultiQC_FastpKraken/Kraken2/" 2>&1 | tee -a "${FOLDER}/Log/${RUN}_run${RUNDATE}/MultiQC_Fastp-Kraken2_run${RUNDATE}.log"
 
-# Back to the main environment (MetaPhlAn, hclust2 and HUMAnN tools are in MTX_env)
-set +u
-conda deactivate
-conda activate MTX_env
-set -u
 # ---------------------------------
 
 # ---------------------------------
