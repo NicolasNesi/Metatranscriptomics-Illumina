@@ -10,7 +10,7 @@ Pipeline for Metatranscriptomics (MTX) analyses from Illumina sequencing data (e
 
 **TO ADD**
 - Sourmash (taxonomic profile)
-- Alternative to HUMAnN 3 for microbial functional analyses
+- Alternative to HUMAnN3 for microbial functional analyses
 
 ## Contents
 1. [Quick start](#quick-start)
